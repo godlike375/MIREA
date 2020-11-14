@@ -3,6 +3,8 @@ import java.io.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
+
+//главный поток, который принимает новые подключения
 public class Server {
     public static Integer counter;
     public static CopyOnWriteArrayList<CClient> list = new CopyOnWriteArrayList<CClient>();
@@ -53,10 +55,6 @@ class CClient
     public Socket socket;
     public CClient(Socket clientSocket)
     {
-        //try(
-        //PrintWriter output = new PrintWriter(clientSocket.getOutputStream(), true); 
-        //BufferedReader input = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-        //)
         try
         {
             out = new PrintWriter(clientSocket.getOutputStream(), true); 
@@ -76,9 +74,9 @@ class CClient
     public void close()
     {
         try{
-           //out.close();
-            //in.close(); 
-            //socket.close(); 
+           out.close();
+            in.close(); 
+            socket.close(); 
         }
         catch(Exception e)
         {
@@ -99,7 +97,7 @@ class Task
     }
 }
 
-
+//Поток, который принимает задания от клиентов
 class TaskListener implements Runnable {
     @Override
     public void run() {
@@ -112,12 +110,15 @@ class TaskListener implements Runnable {
                     if (c.in.ready())
                     {
                         String task = c.in.readLine();
-                        System.out.println("listened task: "+task);
                         if (task!=null)
+                        {
                             Server.tasks.add(new Task(task, c));
+                            System.out.println("listened task: "+task);
+                        }
+                            
                         else
                         {
-                            //c.close();
+                            c.close();
                             Server.list.remove(c);
                             synchronized(Server.counter)
                             {
@@ -142,6 +143,7 @@ class TaskListener implements Runnable {
     }
 }
 
+//Поток, который принимает результаты от воркера и возвращает клиентам
 class Answerer implements Runnable {
     @Override
     public void run() {
@@ -155,28 +157,11 @@ class Answerer implements Runnable {
     }
 }
 
+
+//Поток, выполняющий все вычисления
 class Worker implements Runnable {
     
-    private double split_calc(String line)
-    {
-        String[] lines = line.split(" ");
-        double a1 = Double.parseDouble(lines[0]);
-        char op = lines[1].charAt(0);
-        double a2 = Double.parseDouble(lines[2]);
-        return calculate(a1, a2, op);
-    }
-    private double calculate(double arg1, double arg2, char op)
-    {  
-        switch(op)
-        {
-            case '+': return arg1+arg2;
-            case '-': return arg1-arg2;
-            case '*': return arg1*arg2;
-            case '/': return arg1/arg2;
-        }
-        return 0;
 
-    }
     @Override
     public void run() {
         while(true)
@@ -199,5 +184,28 @@ class Worker implements Runnable {
                     
 
     }
+
+
+    private double split_calc(String line)
+    {
+        String[] lines = line.split(" ");
+        double a1 = Double.parseDouble(lines[0]);
+        char op = lines[1].charAt(0);
+        double a2 = Double.parseDouble(lines[2]);
+        return calculate(a1, a2, op);
+    }
+    private double calculate(double arg1, double arg2, char op)
+    {  
+        switch(op)
+        {
+            case '+': return arg1+arg2;
+            case '-': return arg1-arg2;
+            case '*': return arg1*arg2;
+            case '/': return arg1/arg2;
+        }
+        return 0;
+
+    }
+
 }
 
