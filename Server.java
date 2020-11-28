@@ -1,87 +1,58 @@
 import java.net.*;
 import java.io.*;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 
-//РіР»Р°РІРЅС‹Р№ РїРѕС‚РѕРє, РєРѕС‚РѕСЂС‹Р№ РїСЂРёРЅРёРјР°РµС‚ РЅРѕРІС‹Рµ РїРѕРґРєР»СЋС‡РµРЅРёСЏ
+//главный поток, который принимает новые подключения
 public class Server {
-    public static Integer counter;
-    public static CopyOnWriteArrayList<CClient> list = new CopyOnWriteArrayList<CClient>();
-    public static ConcurrentLinkedQueue<Task> tasks = new ConcurrentLinkedQueue<Task>();
-    public static ConcurrentLinkedQueue<Task> ready = new ConcurrentLinkedQueue<Task>();
+
     public static void main(String[] args) throws IOException {
-        counter = new Integer(0);
         if (args.length != 1) {
             System.err.println("Usage: java EchoServer <port number>");
             System.exit(1);
         }
          
         int portNumber = Integer.parseInt(args[0]);
-         
-        Worker worker = new Worker();
+        final CopyOnWriteArrayList<CClient> clients = new CopyOnWriteArrayList<CClient>();
+        final ConcurrentLinkedQueue<Task> tasks = new ConcurrentLinkedQueue<Task>();
+        final ConcurrentLinkedQueue<Task> ready = new ConcurrentLinkedQueue<Task>();
+        Worker worker = new Worker(tasks, ready, clients);
         new Thread(worker).start();
-        TaskListener listener = new TaskListener();
+        TaskListener listener = new TaskListener(clients, tasks);
         new Thread(listener).start();
-        Answerer answerer = new Answerer();
+        Answerer answerer = new Answerer(clients, ready);
         new Thread(answerer).start();
-
-        try (ServerSocket serverSocket = new ServerSocket(portNumber)) 
+        ServerSocketChannel serverSocket = ServerSocketChannel.open();
+        serverSocket.bind(new InetSocketAddress(portNumber));
+        serverSocket.configureBlocking(false);
+        while(true)
         {
-            while(true)
+            final SocketChannel client = serverSocket.accept();
+            if (client != null) 
             {
-                Socket client = serverSocket.accept();
+                client.configureBlocking(false);
                 System.out.println("new client");
-                list.add(new CClient(client));
-                System.out.println(list.size());
-                synchronized(Server.counter)
-                {
-                    Server.counter++;
-                }
-            } 
-        }
-        catch(Exception e)
-        {
-            System.out.println(e + "123");
-        }
-        
+                clients.add(new CClient(client, ByteBuffer.allocateDirect(32)));
+            }
+            clients.removeIf((socketChannel) -> !socketChannel.socket.isOpen());
+        } 
+    
     }
 }
 
 class CClient
 {
-    public PrintWriter out;
-    public BufferedReader in;
-    public Socket socket;
-    public CClient(Socket clientSocket)
+    public ByteBuffer buf;
+    public SocketChannel socket;
+    public CClient(SocketChannel clientSocket, ByteBuffer buffer)
     {
-        try
-        {
-            out = new PrintWriter(clientSocket.getOutputStream(), true); 
-            in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-            socket = clientSocket;
-        }
-        catch (IOException e) {
-            Server.list.remove(this);
-            System.out.println("Exception caught client");
-            System.out.println(e.getMessage());
-            synchronized(Server.counter)
-            {
-                Server.counter--;
-            }
-        }
-    }
-    public void close()
-    {
-        try{
-           out.close();
-            in.close(); 
-            socket.close(); 
-        }
-        catch(Exception e)
-        {
-            System.out.println(e);
-        }
+        socket = clientSocket;
+        buf = buffer;
     }
 }
 
@@ -97,87 +68,115 @@ class Task
     }
 }
 
-//РџРѕС‚РѕРє, РєРѕС‚РѕСЂС‹Р№ РїСЂРёРЅРёРјР°РµС‚ Р·Р°РґР°РЅРёСЏ РѕС‚ РєР»РёРµРЅС‚РѕРІ
+//Поток, который принимает задания от клиентов
 class TaskListener implements Runnable {
+    private CopyOnWriteArrayList<CClient> clients;
+    private ConcurrentLinkedQueue<Task> tasks;
+    public TaskListener(CopyOnWriteArrayList<CClient> c, ConcurrentLinkedQueue<Task> t)
+    {
+        clients = c;
+        tasks = t;
+    }
     @Override
     public void run() {
         while(true)
-            for(CClient c: Server.list)
+        {
+
+            for(CClient c: clients)
             {
                 try
                 {
-                    System.out.println("listener "+Integer.toString(Server.list.size()));
-                    if (c.in.ready())
                     {
-                        String task = c.in.readLine();
-                        if (task!=null)
+                        int numbytes = c.socket.read(c.buf);
+                        if (numbytes == -1) 
+                            clients.remove(c);
+                        else if(numbytes==0);
+                        else if(numbytes==2) // на клиенте пустая строка введена
                         {
-                            Server.tasks.add(new Task(task, c));
-                            System.out.println("listened task: "+task);
+                            clients.remove(c);
                         }
-                            
                         else
                         {
-                            c.close();
-                            Server.list.remove(c);
-                            synchronized(Server.counter)
+                            c.buf.flip();
+                            if(c.buf.remaining()>2)
                             {
-                                Server.counter--;
+                                byte[] b = new byte[c.buf.remaining()];
+                                c.buf.get(b);
+                                String task = new String(b); //10'n 13'r'
+                                tasks.add(new Task(task, c));
+                                System.out.println("listened task: "+task);
                             }
                         }
 
                     }
                 }
-                catch (IOException e)
+                catch (Exception e)
                 {
-                    Server.list.remove(c);
-                    System.out.println("Exception caught TaskListener");
-                    System.out.println(e.getMessage());
-                    synchronized(Server.counter)
-                    {
-                        Server.counter--;
-                    }
+                    clients.remove(c);
                 }
                     
             }
+        }
     }
 }
 
-//РџРѕС‚РѕРє, РєРѕС‚РѕСЂС‹Р№ РїСЂРёРЅРёРјР°РµС‚ СЂРµР·СѓР»СЊС‚Р°С‚С‹ РѕС‚ РІРѕСЂРєРµСЂР° Рё РІРѕР·РІСЂР°С‰Р°РµС‚ РєР»РёРµРЅС‚Р°Рј
+//Поток, который принимает результаты от воркера и возвращает клиентам
 class Answerer implements Runnable {
+    private CopyOnWriteArrayList<CClient> clients;
+    private ConcurrentLinkedQueue<Task> ready;
+    public Answerer(CopyOnWriteArrayList<CClient> c, ConcurrentLinkedQueue<Task> r)
+    {
+        clients = c;
+        ready = r;
+    }
     @Override
     public void run() {
         while(true)
-            if(Server.ready.size() > 0)
+            if(ready.size() > 0)
             {
-                Task t = Server.ready.poll();
+                Task t = ready.poll();
                 System.out.println("result: "+t.answer);
-                t.client.out.println(t.answer);
+                t.client.buf.rewind();
+                t.client.buf.put(t.answer.getBytes());
+                t.client.buf.rewind();
+                try{
+                    while (t.client.buf.hasRemaining()) {
+                        t.client.socket.write(t.client.buf);
+                   }
+                }
+                catch (IOException e) {
+                    clients.remove(t.client);
+                }
+                t.client.buf.compact();
             }
     }
 }
 
 
-//РџРѕС‚РѕРє, РІС‹РїРѕР»РЅСЏСЋС‰РёР№ РІСЃРµ РІС‹С‡РёСЃР»РµРЅРёСЏ
+//Поток, выполняющий все вычисления
 class Worker implements Runnable {
-    
+    private ConcurrentLinkedQueue<Task> ready;
+    private ConcurrentLinkedQueue<Task> tasks;
+    private CopyOnWriteArrayList<CClient> clients;
+    public Worker(ConcurrentLinkedQueue<Task> t, ConcurrentLinkedQueue<Task> r, CopyOnWriteArrayList<CClient> c)
+    {
+        ready = r;
+        tasks = t;
+        clients = c;
+    }
 
     @Override
     public void run() {
         while(true)
         {
-            if(Server.tasks.size() > 0)
+            if(tasks.size() > 0)
             {
-                Task t = Server.tasks.poll();
+                Task t = tasks.poll();
                 System.out.println("task: "+t.task);
                 int sc = 0;
-                synchronized(Server.counter)
-                {
-                   sc = Server.counter;
-                }
-                String result = Double.toString(split_calc(t.task)) +" "+ Integer.toString(sc);
+                String result = Double.toString(split_calc(t.task)) +" "+ Integer.toString(clients.size());
                 t.answer = result;
-                Server.ready.add(t);
+                ready.add(t);
             }
              
         }
